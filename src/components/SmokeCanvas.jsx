@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { EffectComposer, RenderPass, BloomEffect, EffectPass } from "postprocessing";
 
 export default function SmokeCanvas() {
   const mountRef = useRef(null);
@@ -7,18 +8,20 @@ export default function SmokeCanvas() {
 
   useEffect(() => {
     const scene = new THREE.Scene();
-
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     mountRef.current.appendChild(renderer.domElement);
 
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new EffectPass(camera, new BloomEffect({ intensity: 1.8, mipmapBlur: true })));
+
     const resolution = 512;
 
-    let rtA = new THREE.WebGLRenderTarget(resolution, resolution);
-    let rtB = new THREE.WebGLRenderTarget(resolution, resolution);
-
+    let rtA = new THREE.WebGLRenderTarget(resolution, resolution, { type: THREE.FloatType });
+    let rtB = new THREE.WebGLRenderTarget(resolution, resolution, { type: THREE.FloatType });
 
     const plane = new THREE.PlaneGeometry(2, 2);
 
@@ -41,25 +44,23 @@ export default function SmokeCanvas() {
         uniform vec4 uMouse;
         uniform float uTime;
 
-        float hash(vec2 p){
-          return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453123);
-        }
-
         void main() {
           vec4 color = texture2D(uTexture, vUv);
 
-          color *= 0.985;
+          color *= 0.97;
 
           vec2 diff = vUv - uMouse.xy;
           float dist = length(diff);
 
-          float force = exp(-dist * 50.0);
+          float force = exp(-dist * 40.0);
 
-          color.rgb += vec3(
-            0.5 + 0.5 * sin(uTime + diff.x * 20.0),
-            0.5 + 0.5 * sin(uTime + diff.y * 20.0 + 2.0),
+          vec3 smoke = vec3(
+            0.5 + 0.5 * sin(uTime + diff.x * 10.0),
+            0.5 + 0.5 * sin(uTime + diff.y * 10.0 + 2.0),
             0.5 + 0.5 * sin(uTime + 4.0)
-          ) * force * length(uMouse.zw) * 2.0;
+          );
+
+          color.rgb += smoke * force * length(uMouse.zw) * 3.0;
 
           gl_FragColor = color;
         }
@@ -85,7 +86,7 @@ export default function SmokeCanvas() {
 
       [rtA, rtB] = [rtB, rtA];
 
-      renderer.render(scene, camera);
+      composer.render();
 
       mouse.current.dx *= 0.9;
       mouse.current.dy *= 0.9;
@@ -108,11 +109,10 @@ export default function SmokeCanvas() {
 
     return () => {
       window.removeEventListener("mousemove", handleMove);
-        if (mountRef.current && renderer.domElement) {
+      if (mountRef.current && renderer.domElement) {
         mountRef.current.removeChild(renderer.domElement);
-        }
-        renderer.dispose();
-
+      }
+      renderer.dispose();
     };
   }, []);
 
