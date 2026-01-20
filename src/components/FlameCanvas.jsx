@@ -4,11 +4,10 @@ import { EffectComposer, RenderPass, EffectPass, BloomEffect } from "postprocess
 
 export default function FlameCanvas() {
   const mountRef = useRef();
-  // Store mouse state
   const mouse = useRef({ x: 0.5, y: 0.5 });
 
   useEffect(() => {
-    // 1. Setup Renderer with Alpha (transparency)
+    // 1. Setup Renderer
     const renderer = new THREE.WebGLRenderer({ 
       alpha: true, 
       powerPreference: "high-performance",
@@ -18,32 +17,31 @@ export default function FlameCanvas() {
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setClearColor(0x000000, 0); // Transparent background
+    renderer.setClearColor(0x000000, 0);
     mountRef.current.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    // Resolution for the simulation buffer (higher = sharper, lower = more fluid/blurry)
     const simRes = 256; 
 
-    // 2. Setup Render Targets (Ping-Pong Buffering)
+    // 2. Render Targets
     const createRT = () =>
       new THREE.WebGLRenderTarget(simRes, simRes, {
-        type: THREE.FloatType, // Needed for precise heat values > 1.0
+        type: THREE.FloatType,
         minFilter: THREE.LinearFilter,
         magFilter: THREE.LinearFilter,
-        format: THREE.RedFormat, // We only need 1 channel (Heat) for physics
+        format: THREE.RedFormat,
       });
 
     let targetA = createRT();
     let targetB = createRT();
 
-    // 3. Simulation Shader (The Physics)
+    // 3. Simulation Shader (Physics)
     const simMat = new THREE.ShaderMaterial({
       uniforms: {
         prev: { value: targetA.texture },
-        mouse: { value: new THREE.Vector3(0, 0, 0) }, // x, y, isClicking
+        mouse: { value: new THREE.Vector3(0, 0, 0) },
         resolution: { value: new THREE.Vector2(simRes, simRes) },
         aspect: { value: window.innerWidth / window.innerHeight },
       },
@@ -62,32 +60,27 @@ export default function FlameCanvas() {
           vec2 uv = vUv;
           vec2 px = 1.0 / resolution;
 
-          // 1. Diffusion (Spreading heat to neighbors)
-          // This makes it behave like a liquid
           float center = texture2D(prev, uv).r;
           float top = texture2D(prev, uv + vec2(0.0, px.y)).r;
           float bottom = texture2D(prev, uv - vec2(0.0, px.y)).r;
           float left = texture2D(prev, uv - vec2(px.x, 0.0)).r;
           float right = texture2D(prev, uv + vec2(px.x, 0.0)).r;
 
-          // Laplacian operator for diffusion
           float avg = (top + bottom + left + right + center) / 5.0;
-          float diff = mix(center, avg, 0.8); // 0.8 = high viscosity spreading
+          float diff = mix(center, avg, 0.8);
 
-          // 2. Cooling (Decay)
-          diff *= 0.985; // Cools down slowly (0.99 is slower, 0.90 is fast)
-          diff -= 0.002; // Absolute dropoff to ensure it eventually hits 0
+          // Tweaked Cooling: Slower decay to keep it "hot" longer
+          diff *= 0.99; 
+          diff -= 0.001;
 
-          // 3. Mouse Injection
           vec2 m = mouse.xy;
           vec2 d = uv - m;
-          d.x *= aspect; // Fix aspect ratio distortion
+          d.x *= aspect;
           float len = length(d);
           
-          // Brush size and heat intensity
           if(len < 0.04) {
              float heat = smoothstep(0.04, 0.0, len);
-             diff += heat * 0.5; // Add heat
+             diff += heat * 0.5;
           }
 
           gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
@@ -95,7 +88,7 @@ export default function FlameCanvas() {
       `,
     });
 
-    // 4. Display Shader (The Visuals)
+    // 4. Display Shader (Visuals)
     const displayMat = new THREE.ShaderMaterial({
       uniforms: {
         tex: { value: targetA.texture },
@@ -110,7 +103,6 @@ export default function FlameCanvas() {
         uniform sampler2D tex;
         uniform float time;
 
-        // Simple pseudo-noise function
         float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
         float noise(vec2 p) {
             vec2 i = floor(p);
@@ -123,34 +115,38 @@ export default function FlameCanvas() {
         void main() {
           float heat = texture2D(tex, vUv).r;
           
-          if (heat < 0.01) discard; // Optimization: don't draw empty space
+          if (heat < 0.01) discard;
 
-          // Add dynamic noise to simulate churning lava crust
-          float n = noise(vUv * 10.0 + vec2(time * 0.2, time * 0.1));
-          float texHeat = heat + (n * 0.1) - 0.05;
+          // Reduced noise intensity for a smoother "liquid" look
+          float n = noise(vUv * 8.0 + vec2(time * 0.2, time * 0.1));
+          float texHeat = heat + (n * 0.04) - 0.02;
 
           vec3 color = vec3(0.0);
           float alpha = 1.0;
 
-          // Lava Color Gradient
-          vec3 crust = vec3(0.1, 0.05, 0.05); // Dark Rock
-          vec3 red = vec3(0.6, 0.0, 0.0);    // Cooling Magma
-          vec3 orange = vec3(1.0, 0.3, 0.0); // Hot Lava
-          vec3 yellow = vec3(1.0, 0.8, 0.2); // Very Hot
-          vec3 white = vec3(1.0, 1.0, 1.0);  // Core Heat
+          // UPDATED PALETTE: More Orange/Fire, Less Grey
+          vec3 crust = vec3(0.2, 0.02, 0.02); // Charred Red/Black (not grey)
+          vec3 red = vec3(0.8, 0.1, 0.05);    // Bright Magma
+          vec3 orange = vec3(1.0, 0.45, 0.0); // Vibrant Orange
+          vec3 yellow = vec3(1.0, 0.85, 0.2); // Hot Yellow
+          vec3 white = vec3(1.0, 1.0, 1.0);   // Core Heat
 
-          if (texHeat < 0.15) {
-             // Fading out / Crust
-             color = mix(vec3(0.0), crust, smoothstep(0.0, 0.15, texHeat));
-             alpha = smoothstep(0.01, 0.1, texHeat); // Fade alpha at edges
-          } else if (texHeat < 0.4) {
-             color = mix(crust, red, (texHeat - 0.15) / 0.25);
-          } else if (texHeat < 0.7) {
-             color = mix(red, orange, (texHeat - 0.4) / 0.3);
-          } else if (texHeat < 1.0) {
-             color = mix(orange, yellow, (texHeat - 0.7) / 0.3);
+          // Shifted thresholds to make Orange/Red dominate
+          if (texHeat < 0.1) {
+             // Very short "crust" phase
+             color = mix(vec3(0.0), crust, smoothstep(0.0, 0.1, texHeat));
+             alpha = smoothstep(0.01, 0.05, texHeat);
+          } else if (texHeat < 0.25) {
+             // Rapid transition to Red
+             color = mix(crust, red, (texHeat - 0.1) / 0.15);
+          } else if (texHeat < 0.55) {
+             // Main body is Orange/Red
+             color = mix(red, orange, (texHeat - 0.25) / 0.3);
+          } else if (texHeat < 0.85) {
+             // Bright center
+             color = mix(orange, yellow, (texHeat - 0.55) / 0.3);
           } else {
-             color = mix(yellow, white, clamp((texHeat - 1.0) / 0.5, 0.0, 1.0));
+             color = mix(yellow, white, clamp((texHeat - 0.85) / 0.3, 0.0, 1.0));
           }
 
           gl_FragColor = vec4(color, alpha);
@@ -160,51 +156,45 @@ export default function FlameCanvas() {
     });
 
     const plane = new THREE.PlaneGeometry(2, 2);
-    const mesh = new THREE.Mesh(plane, simMat); // Start with sim material
+    const mesh = new THREE.Mesh(plane, simMat);
     scene.add(mesh);
 
-    // 5. Post-Processing (Bloom)
+    // 5. Post-Processing (Increased Bloom)
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
-        intensity: 2.0,   // Glow strength
-        luminanceThreshold: 0.2, // Only bright parts glow
-        radius: 0.6 // Glow spread
+        intensity: 2.5,          // Higher intensity for more "fire" glow
+        luminanceThreshold: 0.15, // Allow darker oranges to glow too
+        radius: 0.7 
     })));
 
-    // Animation Loop
     function animate(t) {
       const timeVal = t * 0.001;
 
-      // --- Step 1: Simulation (Physics) ---
+      // Simulation
       mesh.material = simMat;
       simMat.uniforms.prev.value = targetA.texture;
       simMat.uniforms.mouse.value.set(mouse.current.x, 1.0 - mouse.current.y, 0);
       
-      // Render physics to targetB
       renderer.setRenderTarget(targetB);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
 
-      // Swap buffers
       const temp = targetA;
       targetA = targetB;
       targetB = temp;
 
-      // --- Step 2: Display (Visuals) ---
+      // Display
       mesh.material = displayMat;
       displayMat.uniforms.tex.value = targetA.texture;
       displayMat.uniforms.time.value = timeVal;
 
-      // Render to screen with Bloom
       composer.render();
-
       requestAnimationFrame(animate);
     }
 
     animate(0);
 
-    // Resize Handler
     function onResize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -213,7 +203,6 @@ export default function FlameCanvas() {
         simMat.uniforms.aspect.value = w / h;
     }
 
-    // Mouse Handler
     function onMove(e) {
       mouse.current.x = e.clientX / window.innerWidth;
       mouse.current.y = e.clientY / window.innerHeight;
@@ -221,7 +210,6 @@ export default function FlameCanvas() {
 
     window.addEventListener("resize", onResize);
     window.addEventListener("mousemove", onMove);
-    // Touch support
     window.addEventListener("touchmove", (e) => {
         const touch = e.touches[0];
         mouse.current.x = touch.clientX / window.innerWidth;
