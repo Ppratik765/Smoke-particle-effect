@@ -84,10 +84,10 @@ export default function FlameCanvas() {
           float len = length(d);
           
           // BRUSH SIZE & VOLUME:
-          // Increased radius to 0.08 (was 0.04) for "More Volume"
-          if(len < 0.08) {
-             float heat = smoothstep(0.08, 0.0, len);
-             diff += heat * 0.8; // High heat input
+          // Increased radius to 0.06 (was 0.04) for "More Volume"
+          if(len < 0.06) {
+             float heat = smoothstep(0.06, 0.0, len);
+             diff += heat * 0.7; // High heat input
           }
 
           gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
