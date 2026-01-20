@@ -80,7 +80,7 @@ export default function FlameCanvas() {
           
           if(len < 0.058) {
              float heat = smoothstep(0.058, 0.0, len);
-             diff += heat * 0.8 * mouse.z; 
+             diff += heat * 0.6 * mouse.z; 
           }
 
           // Write to Red channel, Alpha must be 1.0
