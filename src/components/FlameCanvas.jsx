@@ -44,7 +44,7 @@ export default function FlameCanvas() {
       uniforms: {
         prev: { value: targetA.texture },
         mouse: { value: new THREE.Vector3(0, 0, 0) }, // x, y, isClicking
-        resolution: { value: newqh THREE.Vector2(simRes, simRes) },
+        resolution: { value: new THREE.Vector2(simRes, simRes) },
         aspect: { value: window.innerWidth / window.innerHeight },
       },
       vertexShader: `
