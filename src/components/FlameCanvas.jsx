@@ -1,155 +1,244 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { EffectComposer, RenderPass, EffectPass, BloomEffect } from "postprocessing";
 
 export default function FlameCanvas() {
   const mountRef = useRef();
-  const mouse = useRef({ x: 0.5, y: 0.5, dx: 0, dy: 0 });
+  // Store mouse state
+  const mouse = useRef({ x: 0.5, y: 0.5 });
 
   useEffect(() => {
-    const renderer = new THREE.WebGLRenderer();
+    // 1. Setup Renderer with Alpha (transparency)
+    const renderer = new THREE.WebGLRenderer({ 
+      alpha: true, 
+      powerPreference: "high-performance",
+      antialias: false,
+      stencil: false,
+      depth: false
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setClearColor(0x000000, 0); // Transparent background
     mountRef.current.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    const res = 512;
+    // Resolution for the simulation buffer (higher = sharper, lower = more fluid/blurry)
+    const simRes = 256; 
 
+    // 2. Setup Render Targets (Ping-Pong Buffering)
     const createRT = () =>
-      new THREE.WebGLRenderTarget(res, res, {
-        type: THREE.FloatType,
+      new THREE.WebGLRenderTarget(simRes, simRes, {
+        type: THREE.FloatType, // Needed for precise heat values > 1.0
         minFilter: THREE.LinearFilter,
         magFilter: THREE.LinearFilter,
+        format: THREE.RedFormat, // We only need 1 channel (Heat) for physics
       });
 
-    let flameA = createRT();
-    let flameB = createRT();
+    let targetA = createRT();
+    let targetB = createRT();
 
-    const plane = new THREE.PlaneGeometry(2, 2);
-
+    // 3. Simulation Shader (The Physics)
     const simMat = new THREE.ShaderMaterial({
       uniforms: {
-        prev: { value: flameA.texture },
-        mouse: { value: new THREE.Vector4() },
-        time: { value: 0 },
+        prev: { value: targetA.texture },
+        mouse: { value: new THREE.Vector3(0, 0, 0) }, // x, y, isClicking
+        resolution: { value: newqh THREE.Vector2(simRes, simRes) },
+        aspect: { value: window.innerWidth / window.innerHeight },
       },
       vertexShader: `
         varying vec2 vUv;
-        void main(){vUv=uv;gl_Position=vec4(position,1.0);}
+        void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
       `,
       fragmentShader: `
         varying vec2 vUv;
         uniform sampler2D prev;
-        uniform vec4 mouse;
-        uniform float time;
+        uniform vec3 mouse;
+        uniform vec2 resolution;
+        uniform float aspect;
 
-        float rand(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+        void main() {
+          vec2 uv = vUv;
+          vec2 px = 1.0 / resolution;
 
-        void main(){
-          vec4 c = texture2D(prev, vUv);
+          // 1. Diffusion (Spreading heat to neighbors)
+          // This makes it behave like a liquid
+          float center = texture2D(prev, uv).r;
+          float top = texture2D(prev, uv + vec2(0.0, px.y)).r;
+          float bottom = texture2D(prev, uv - vec2(0.0, px.y)).r;
+          float left = texture2D(prev, uv - vec2(px.x, 0.0)).r;
+          float right = texture2D(prev, uv + vec2(px.x, 0.0)).r;
 
-          c *= 0.96;
+          // Laplacian operator for diffusion
+          float avg = (top + bottom + left + right + center) / 5.0;
+          float diff = mix(center, avg, 0.8); // 0.8 = high viscosity spreading
 
-          vec2 d = vUv - mouse.xy;
-          float r = length(d);
+          // 2. Cooling (Decay)
+          diff *= 0.985; // Cools down slowly (0.99 is slower, 0.90 is fast)
+          diff -= 0.002; // Absolute dropoff to ensure it eventually hits 0
 
-          float inject = exp(-r*45.0);
+          // 3. Mouse Injection
+          vec2 m = mouse.xy;
+          vec2 d = uv - m;
+          d.x *= aspect; // Fix aspect ratio distortion
+          float len = length(d);
+          
+          // Brush size and heat intensity
+          if(len < 0.04) {
+             float heat = smoothstep(0.04, 0.0, len);
+             diff += heat * 0.5; // Add heat
+          }
 
-          float heat = inject * 3.0;
-
-          c.r += heat;
-          c.g += heat*0.6;
-          c.b += heat*0.1;
-
-          c.a += inject;
-
-          gl_FragColor = c;
+          gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
         }
       `,
     });
 
+    // 4. Display Shader (The Visuals)
     const displayMat = new THREE.ShaderMaterial({
       uniforms: {
-        tex: { value: flameA.texture },
+        tex: { value: targetA.texture },
         time: { value: 0 },
       },
-      vertexShader: simMat.vertexShader,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
+      `,
       fragmentShader: `
         varying vec2 vUv;
         uniform sampler2D tex;
         uniform float time;
 
-        float flicker(vec2 uv){
-          return sin(uv.y*30.0 + time*6.0) * 0.2;
+        // Simple pseudo-noise function
+        float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+                       mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
         }
 
-        void main(){
-          vec4 c = texture2D(tex, vUv);
+        void main() {
+          float heat = texture2D(tex, vUv).r;
+          
+          if (heat < 0.01) discard; // Optimization: don't draw empty space
 
-          float flame = smoothstep(0.3, 2.5, c.r + flicker(vUv));
+          // Add dynamic noise to simulate churning lava crust
+          float n = noise(vUv * 10.0 + vec2(time * 0.2, time * 0.1));
+          float texHeat = heat + (n * 0.1) - 0.05;
 
-          vec3 flameColor = mix(vec3(1.0,0.8,0.5), vec3(1.0,0.3,0.05), flame);
+          vec3 color = vec3(0.0);
+          float alpha = 1.0;
 
-          vec3 smoke = vec3(c.a * 0.25);
+          // Lava Color Gradient
+          vec3 crust = vec3(0.1, 0.05, 0.05); // Dark Rock
+          vec3 red = vec3(0.6, 0.0, 0.0);    // Cooling Magma
+          vec3 orange = vec3(1.0, 0.3, 0.0); // Hot Lava
+          vec3 yellow = vec3(1.0, 0.8, 0.2); // Very Hot
+          vec3 white = vec3(1.0, 1.0, 1.0);  // Core Heat
 
-          gl_FragColor = vec4(flameColor*flame + smoke, 1.0);
+          if (texHeat < 0.15) {
+             // Fading out / Crust
+             color = mix(vec3(0.0), crust, smoothstep(0.0, 0.15, texHeat));
+             alpha = smoothstep(0.01, 0.1, texHeat); // Fade alpha at edges
+          } else if (texHeat < 0.4) {
+             color = mix(crust, red, (texHeat - 0.15) / 0.25);
+          } else if (texHeat < 0.7) {
+             color = mix(red, orange, (texHeat - 0.4) / 0.3);
+          } else if (texHeat < 1.0) {
+             color = mix(orange, yellow, (texHeat - 0.7) / 0.3);
+          } else {
+             color = mix(yellow, white, clamp((texHeat - 1.0) / 0.5, 0.0, 1.0));
+          }
+
+          gl_FragColor = vec4(color, alpha);
         }
       `,
+      transparent: true,
     });
 
-    const mesh = new THREE.Mesh(plane, simMat);
+    const plane = new THREE.PlaneGeometry(2, 2);
+    const mesh = new THREE.Mesh(plane, simMat); // Start with sim material
     scene.add(mesh);
 
-    function animate(t) {
-      simMat.uniforms.prev.value = flameA.texture;
-      simMat.uniforms.mouse.value.set(
-        mouse.current.x,
-        1 - mouse.current.y,
-        mouse.current.dx,
-        mouse.current.dy
-      );
-      simMat.uniforms.time.value = t * 0.001;
+    // 5. Post-Processing (Bloom)
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new EffectPass(camera, new BloomEffect({
+        intensity: 2.0,   // Glow strength
+        luminanceThreshold: 0.2, // Only bright parts glow
+        radius: 0.6 // Glow spread
+    })));
 
-      renderer.setRenderTarget(flameB);
+    // Animation Loop
+    function animate(t) {
+      const timeVal = t * 0.001;
+
+      // --- Step 1: Simulation (Physics) ---
+      mesh.material = simMat;
+      simMat.uniforms.prev.value = targetA.texture;
+      simMat.uniforms.mouse.value.set(mouse.current.x, 1.0 - mouse.current.y, 0);
+      
+      // Render physics to targetB
+      renderer.setRenderTarget(targetB);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
 
-      [flameA, flameB] = [flameB, flameA];
+      // Swap buffers
+      const temp = targetA;
+      targetA = targetB;
+      targetB = temp;
 
+      // --- Step 2: Display (Visuals) ---
       mesh.material = displayMat;
-      displayMat.uniforms.tex.value = flameA.texture;
-      displayMat.uniforms.time.value = t * 0.001;
+      displayMat.uniforms.tex.value = targetA.texture;
+      displayMat.uniforms.time.value = timeVal;
 
-      renderer.render(scene, camera);
-
-      mesh.material = simMat;
-
-      mouse.current.dx *= 0.45;
-      mouse.current.dy *= 0.45;
+      // Render to screen with Bloom
+      composer.render();
 
       requestAnimationFrame(animate);
     }
 
     animate(0);
 
-    function onMove(e) {
-      const x = e.clientX / window.innerWidth;
-      const y = e.clientY / window.innerHeight;
-      mouse.current.dx = x - mouse.current.x;
-      mouse.current.dy = y - mouse.current.y;
-      mouse.current.x = x;
-      mouse.current.y = y;
+    // Resize Handler
+    function onResize() {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        renderer.setSize(w, h);
+        composer.setSize(w, h);
+        simMat.uniforms.aspect.value = w / h;
     }
 
+    // Mouse Handler
+    function onMove(e) {
+      mouse.current.x = e.clientX / window.innerWidth;
+      mouse.current.y = e.clientY / window.innerHeight;
+    }
+
+    window.addEventListener("resize", onResize);
     window.addEventListener("mousemove", onMove);
+    // Touch support
+    window.addEventListener("touchmove", (e) => {
+        const touch = e.touches[0];
+        mouse.current.x = touch.clientX / window.innerWidth;
+        mouse.current.y = touch.clientY / window.innerHeight;
+    });
 
     return () => {
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("mousemove", onMove);
-      if (renderer.domElement.parentNode)
-        renderer.domElement.parentNode.removeChild(renderer.domElement);
+      if (mountRef.current && renderer.domElement) {
+        mountRef.current.removeChild(renderer.domElement);
+      }
       renderer.dispose();
+      targetA.dispose();
+      targetB.dispose();
     };
   }, []);
 
-  return <div ref={mountRef} />;
+  return <div ref={mountRef} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 10 }} />;
 }
