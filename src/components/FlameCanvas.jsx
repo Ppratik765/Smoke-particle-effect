@@ -88,7 +88,7 @@ export default function FlameCanvas() {
 
           float flame = smoothstep(0.3, 2.5, c.r + flicker(vUv));
 
-          vec3 flameColor = mix(vec3(1.0,0.2,0.0), vec3(1.0,1.0,0.3), flame);
+          vec3 flameColor = mix(vec3(1.0,0.8,0.5), vec3(1.0,0.3,0.05), flame);
 
           vec3 smoke = vec3(c.a * 0.25);
 
@@ -124,8 +124,8 @@ export default function FlameCanvas() {
 
       mesh.material = simMat;
 
-      mouse.current.dx *= 0.99;
-      mouse.current.dy *= 0.99;
+      mouse.current.dx *= 0.45;
+      mouse.current.dy *= 0.45;
 
       requestAnimationFrame(animate);
     }
