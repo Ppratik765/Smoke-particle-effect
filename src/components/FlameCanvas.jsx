@@ -4,7 +4,8 @@ import { EffectComposer, RenderPass, EffectPass, BloomEffect } from "postprocess
 
 export default function FlameCanvas() {
   const mountRef = useRef();
-  const mouse = useRef({ x: 0.5, y: 0.5 });
+  // mouse.z = 1.0 (Pen Down / Drawing), 0.0 (Pen Up / Not Drawing)
+  const mouse = useRef({ x: 0.5, y: 0.5, z: 1.0 });
 
   useEffect(() => {
     // 1. Setup Renderer
@@ -52,7 +53,7 @@ export default function FlameCanvas() {
       fragmentShader: `
         varying vec2 vUv;
         uniform sampler2D prev;
-        uniform vec3 mouse;
+        uniform vec3 mouse; // x, y, isDrawing
         uniform vec2 resolution;
         uniform float aspect;
 
@@ -67,27 +68,20 @@ export default function FlameCanvas() {
           float right = texture2D(prev, uv + vec2(px.x, 0.0)).r;
 
           float avg = (top + bottom + left + right + center) / 5.0;
-          
-          // VISCOSITY CONTROL:
-          // Lower mix value (0.6) = Thicker, less spread, holds shape better.
-          // Higher mix value (0.9) = Gaseous, spreads fast.
-          float diff = mix(center, avg, 0.6);
+          float diff = mix(center, avg, 0.6); // Viscosity
 
-          // COOLING CONTROL:
-          // 0.995 = Very slow cooling (Lava stays on screen longer)
-          diff *= 0.995; 
-          diff -= 0.001; // Tiny absolute drop to prevent infinity
+          diff *= 0.995; // Cooling
+          diff -= 0.001;
 
           vec2 m = mouse.xy;
           vec2 d = uv - m;
           d.x *= aspect;
           float len = length(d);
           
-          // BRUSH SIZE & VOLUME:
-          // Increased radius to 0.06 (was 0.04) for "More Volume"
-          if(len < 0.06) {
-             float heat = smoothstep(0.06, 0.0, len);
-             diff += heat * 0.7; // High heat input
+          if(len < 0.08) {
+             float heat = smoothstep(0.08, 0.0, len);
+             // Multiply heat by mouse.z (1.0 = Draw, 0.0 = No Draw)
+             diff += heat * 0.8 * mouse.z; 
           }
 
           gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
@@ -121,26 +115,20 @@ export default function FlameCanvas() {
 
         void main() {
           float heat = texture2D(tex, vUv).r;
-          
-          // Render even faint heat to make the river look wider
           if (heat < 0.005) discard;
 
-          // Gentle noise for liquid surface texture
           float n = noise(vUv * 8.0 + vec2(time * 0.15, time * 0.05));
           float texHeat = heat + (n * 0.03) - 0.01;
 
           vec3 color = vec3(0.0);
           float alpha = 1.0;
 
-          // Palette
-          vec3 crust = vec3(0.2, 0.02, 0.02); // Charred
-          vec3 red = vec3(0.8, 0.1, 0.05);    // Magma
-          vec3 orange = vec3(1.0, 0.45, 0.0); // Lava
-          vec3 yellow = vec3(1.0, 0.85, 0.2); // Bright
-          vec3 white = vec3(1.0, 1.0, 1.0);   // Core
+          vec3 crust = vec3(0.2, 0.02, 0.02);
+          vec3 red = vec3(0.8, 0.1, 0.05);
+          vec3 orange = vec3(1.0, 0.45, 0.0);
+          vec3 yellow = vec3(1.0, 0.85, 0.2);
+          vec3 white = vec3(1.0, 1.0, 1.0);
 
-          // Adjusted Thresholds for "Thicker" look
-          // We start rendering color much earlier (0.05)
           if (texHeat < 0.05) {
              color = mix(vec3(0.0), crust, smoothstep(0.0, 0.05, texHeat));
              alpha = smoothstep(0.0, 0.05, texHeat);
@@ -164,12 +152,12 @@ export default function FlameCanvas() {
     const mesh = new THREE.Mesh(plane, simMat);
     scene.add(mesh);
 
-    // 5. Post-Processing (Bloom)
+    // 5. Post-Processing
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
         intensity: 2.5,
-        luminanceThreshold: 0.1, // Glow starts earlier to make it look hotter/fuller
+        luminanceThreshold: 0.1,
         radius: 0.8 
     })));
 
@@ -179,7 +167,8 @@ export default function FlameCanvas() {
       // Simulation
       mesh.material = simMat;
       simMat.uniforms.prev.value = targetA.texture;
-      simMat.uniforms.mouse.value.set(mouse.current.x, 1.0 - mouse.current.y, 0);
+      // Pass mouse.z (drawing state) to shader
+      simMat.uniforms.mouse.value.set(mouse.current.x, 1.0 - mouse.current.y, mouse.current.z);
       
       renderer.setRenderTarget(targetB);
       renderer.render(scene, camera);
@@ -200,6 +189,8 @@ export default function FlameCanvas() {
 
     animate(0);
 
+    // --- INPUT HANDLING ---
+
     function onResize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -208,22 +199,70 @@ export default function FlameCanvas() {
         simMat.uniforms.aspect.value = w / h;
     }
 
-    function onMove(e) {
+    // Mouse Movement
+    function onMouseMove(e) {
       mouse.current.x = e.clientX / window.innerWidth;
       mouse.current.y = e.clientY / window.innerHeight;
     }
 
+    // Mouse Click (Pen Up/Down Logic)
+    function onMouseDown(e) {
+      // Left Click (0) = Pen Down
+      if (e.button === 0) mouse.current.z = 1.0;
+      // Right Click (2) = Pen Up
+      if (e.button === 2) mouse.current.z = 0.0;
+    }
+
+    // Prevent Context Menu on Right Click
+    function onContextMenu(e) {
+      e.preventDefault();
+    }
+
+    // Touch Support
+    function updateTouch(e) {
+        if(e.touches.length > 0) {
+            const touch = e.touches[0];
+            mouse.current.x = touch.clientX / window.innerWidth;
+            mouse.current.y = touch.clientY / window.innerHeight;
+        }
+    }
+
+    function onTouchStart(e) {
+        // Prevent scrolling while drawing
+        if (e.cancelable) e.preventDefault(); 
+        mouse.current.z = 1.0; // Start Drawing
+        updateTouch(e);
+    }
+
+    function onTouchMove(e) {
+        if (e.cancelable) e.preventDefault();
+        updateTouch(e);
+    }
+
+    function onTouchEnd(e) {
+        mouse.current.z = 0.0; // Stop Drawing
+    }
+
+    // Add Listeners
     window.addEventListener("resize", onResize);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("touchmove", (e) => {
-        const touch = e.touches[0];
-        mouse.current.x = touch.clientX / window.innerWidth;
-        mouse.current.y = touch.clientY / window.innerHeight;
-    });
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("contextmenu", onContextMenu);
+    
+    // Add Passive: false to allow preventing default scroll behavior
+    window.addEventListener("touchstart", onTouchStart, { passive: false });
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", onTouchEnd);
 
     return () => {
       window.removeEventListener("resize", onResize);
-      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+
       if (mountRef.current && renderer.domElement) {
         mountRef.current.removeChild(renderer.domElement);
       }
@@ -233,5 +272,5 @@ export default function FlameCanvas() {
     };
   }, []);
 
-  return <div ref={mountRef} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 10 }} />;
+  return <div ref={mountRef} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", zIndex: 10, cursor: 'crosshair' }} />;
 }
