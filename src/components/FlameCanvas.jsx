@@ -67,20 +67,27 @@ export default function FlameCanvas() {
           float right = texture2D(prev, uv + vec2(px.x, 0.0)).r;
 
           float avg = (top + bottom + left + right + center) / 5.0;
-          float diff = mix(center, avg, 0.8);
+          
+          // VISCOSITY CONTROL:
+          // Lower mix value (0.6) = Thicker, less spread, holds shape better.
+          // Higher mix value (0.9) = Gaseous, spreads fast.
+          float diff = mix(center, avg, 0.6);
 
-          // Tweaked Cooling: Slower decay to keep it "hot" longer
-          diff *= 0.99; 
-          diff -= 0.001;
+          // COOLING CONTROL:
+          // 0.995 = Very slow cooling (Lava stays on screen longer)
+          diff *= 0.995; 
+          diff -= 0.001; // Tiny absolute drop to prevent infinity
 
           vec2 m = mouse.xy;
           vec2 d = uv - m;
           d.x *= aspect;
           float len = length(d);
           
-          if(len < 0.04) {
-             float heat = smoothstep(0.04, 0.0, len);
-             diff += heat * 0.5;
+          // BRUSH SIZE & VOLUME:
+          // Increased radius to 0.08 (was 0.04) for "More Volume"
+          if(len < 0.08) {
+             float heat = smoothstep(0.08, 0.0, len);
+             diff += heat * 0.8; // High heat input
           }
 
           gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
@@ -115,38 +122,36 @@ export default function FlameCanvas() {
         void main() {
           float heat = texture2D(tex, vUv).r;
           
-          if (heat < 0.01) discard;
+          // Render even faint heat to make the river look wider
+          if (heat < 0.005) discard;
 
-          // Reduced noise intensity for a smoother "liquid" look
-          float n = noise(vUv * 8.0 + vec2(time * 0.2, time * 0.1));
-          float texHeat = heat + (n * 0.04) - 0.02;
+          // Gentle noise for liquid surface texture
+          float n = noise(vUv * 8.0 + vec2(time * 0.15, time * 0.05));
+          float texHeat = heat + (n * 0.03) - 0.01;
 
           vec3 color = vec3(0.0);
           float alpha = 1.0;
 
-          // UPDATED PALETTE: More Orange/Fire, Less Grey
-          vec3 crust = vec3(0.2, 0.02, 0.02); // Charred Red/Black (not grey)
-          vec3 red = vec3(0.8, 0.1, 0.05);    // Bright Magma
-          vec3 orange = vec3(1.0, 0.45, 0.0); // Vibrant Orange
-          vec3 yellow = vec3(1.0, 0.85, 0.2); // Hot Yellow
-          vec3 white = vec3(1.0, 1.0, 1.0);   // Core Heat
+          // Palette
+          vec3 crust = vec3(0.2, 0.02, 0.02); // Charred
+          vec3 red = vec3(0.8, 0.1, 0.05);    // Magma
+          vec3 orange = vec3(1.0, 0.45, 0.0); // Lava
+          vec3 yellow = vec3(1.0, 0.85, 0.2); // Bright
+          vec3 white = vec3(1.0, 1.0, 1.0);   // Core
 
-          // Shifted thresholds to make Orange/Red dominate
-          if (texHeat < 0.1) {
-             // Very short "crust" phase
-             color = mix(vec3(0.0), crust, smoothstep(0.0, 0.1, texHeat));
-             alpha = smoothstep(0.01, 0.05, texHeat);
-          } else if (texHeat < 0.25) {
-             // Rapid transition to Red
-             color = mix(crust, red, (texHeat - 0.1) / 0.15);
-          } else if (texHeat < 0.55) {
-             // Main body is Orange/Red
-             color = mix(red, orange, (texHeat - 0.25) / 0.3);
-          } else if (texHeat < 0.85) {
-             // Bright center
-             color = mix(orange, yellow, (texHeat - 0.55) / 0.3);
+          // Adjusted Thresholds for "Thicker" look
+          // We start rendering color much earlier (0.05)
+          if (texHeat < 0.05) {
+             color = mix(vec3(0.0), crust, smoothstep(0.0, 0.05, texHeat));
+             alpha = smoothstep(0.0, 0.05, texHeat);
+          } else if (texHeat < 0.3) {
+             color = mix(crust, red, (texHeat - 0.05) / 0.25);
+          } else if (texHeat < 0.6) {
+             color = mix(red, orange, (texHeat - 0.3) / 0.3);
+          } else if (texHeat < 0.9) {
+             color = mix(orange, yellow, (texHeat - 0.6) / 0.3);
           } else {
-             color = mix(yellow, white, clamp((texHeat - 0.85) / 0.3, 0.0, 1.0));
+             color = mix(yellow, white, clamp((texHeat - 0.9) / 0.5, 0.0, 1.0));
           }
 
           gl_FragColor = vec4(color, alpha);
@@ -159,13 +164,13 @@ export default function FlameCanvas() {
     const mesh = new THREE.Mesh(plane, simMat);
     scene.add(mesh);
 
-    // 5. Post-Processing (Increased Bloom)
+    // 5. Post-Processing (Bloom)
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
-        intensity: 2.5,          // Higher intensity for more "fire" glow
-        luminanceThreshold: 0.15, // Allow darker oranges to glow too
-        radius: 0.7 
+        intensity: 2.5,
+        luminanceThreshold: 0.1, // Glow starts earlier to make it look hotter/fuller
+        radius: 0.8 
     })));
 
     function animate(t) {
