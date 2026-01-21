@@ -191,8 +191,8 @@ export default function FlameCanvas() {
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
         intensity: 3.0,
-        luminanceThreshold: 0.1, // Only glow the hot parts
-        radius: 0.9
+        luminanceThreshold: 0.08, // Only glow the hot parts
+        radius: 1.0
     })));
 
     function animate(t) {
