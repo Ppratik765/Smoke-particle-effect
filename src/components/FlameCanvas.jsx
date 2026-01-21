@@ -25,7 +25,8 @@ export default function FlameCanvas() {
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
     // 2. Render Targets
-    const simRes = 256; 
+    // UPGRADE: Increased to 512 for sharper, less blocky details
+    const simRes = 512; 
     const createRT = () =>
       new THREE.WebGLRenderTarget(simRes, simRes, {
         type: THREE.HalfFloatType,
@@ -38,7 +39,6 @@ export default function FlameCanvas() {
     let targetB = createRT();
 
     // 3. Simulation Shader (Physics)
-    // Kept mostly same, just slightly adjusted for "flow" feel
     const simMat = new THREE.ShaderMaterial({
       uniforms: {
         prev: { value: targetA.texture },
@@ -71,7 +71,7 @@ export default function FlameCanvas() {
           float avg = (top + bottom + left + right + center) / 5.0;
           float diff = mix(center, avg, 0.6); // Viscosity
 
-          diff *= 0.985; // Cooling rate
+          diff *= 0.99; // Cooling
           diff -= 0.002;
 
           vec2 m = mouse.xy;
@@ -79,8 +79,8 @@ export default function FlameCanvas() {
           d.x *= aspect;
           float len = length(d);
           
-          if(len < 0.068) {
-             float heat = smoothstep(0.068, 0.0, len);
+          if(len < 0.06) {
+             float heat = smoothstep(0.06, 0.0, len);
              diff += heat * 0.8 * mouse.z; 
           }
 
@@ -107,7 +107,6 @@ export default function FlameCanvas() {
         uniform float time;
         uniform vec2 resolution;
 
-        // Noise function for surface crust
         float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
         float noise(vec2 p) {
             vec2 i = floor(p);
@@ -116,7 +115,6 @@ export default function FlameCanvas() {
             return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
                        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
         }
-
         float fbm(vec2 p) {
             float v = 0.0;
             v += 0.5 * noise(p); p *= 2.0;
@@ -125,43 +123,52 @@ export default function FlameCanvas() {
         }
 
         void main() {
-          // 1. Distort UVs slightly to make it look churning
+          // Flow Distortion
           vec2 flow = vec2(fbm(vUv * 5.0 + time * 0.5), fbm(vUv * 5.0 - time * 0.5)) - 0.5;
           vec2 uv = vUv + flow * 0.015; 
           
           float heat = texture2D(tex, uv).r;
           
-          if (heat < 0.01) discard;
+          // UPGRADE: Soft Edge (Anti-Voxel)
+          // Instead of 'discard', we fade the alpha out smoothly
+          float alpha = smoothstep(0.01, 0.08, heat);
+          if (alpha < 0.01) discard; // Still discard fully empty pixels for performance
 
-          // 2. Calculate "Normal" (Slope) from Heat
-          // This gives us the 3D shape: darker areas are lower, bright areas are higher.
-          vec2 px = 1.0 / resolution.xy;
+          // UPGRADE: Smoother Normals
+          // We sample 2.0 pixels away instead of 1.0. This blurs the shape slightly, 
+          // removing the jagged "minecraft" look from the reflection.
+          vec2 px = (1.0 / resolution.xy) * 2.5; 
+          
           float hL = texture2D(tex, uv - vec2(px.x, 0.0)).r;
           float hR = texture2D(tex, uv + vec2(px.x, 0.0)).r;
           float hD = texture2D(tex, uv - vec2(0.0, px.y)).r;
           float hU = texture2D(tex, uv + vec2(0.0, px.y)).r;
           
-          // The "Normal" vector points perpendicular to the surface
-          vec3 normal = normalize(vec3( (hL - hR) * 2.0, (hD - hU) * 2.0, 0.1 ));
+          vec3 normal = normalize(vec3( (hL - hR) * 3.0, (hD - hU) * 3.0, 0.05 )); // Lower Z = Steeper slopes
 
-          // 3. Lighting (Simulated Point Light following mouse)
-          vec3 lightDir = normalize(vec3(0.5, 0.5, 1.0)); // Fixed overhead light
+          // Lighting Setup
+          vec3 lightDir = normalize(vec3(0.5, 0.5, 1.0));
+          vec3 viewDir = vec3(0.0, 0.0, 1.0); // Viewer is always looking straight down
+
+          // 1. Diffuse (Base Shape)
           float diff = max(dot(normal, lightDir), 0.0);
           
-          // Specular Highlight (Shiny/Wet look)
-          vec3 viewDir = vec3(0.0, 0.0, 1.0);
+          // 2. Specular (Wet Shine)
           vec3 reflectDir = reflect(-lightDir, normal);
-          float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0); // 32.0 = shininess
+          float spec = pow(max(dot(viewDir, reflectDir), 0.0), 20.0); // Broader highlight
 
-          // 4. Color Ramp
-          // Adding noise to heat to create "chunks" of crust
+          // 3. Fresnel (Rim Light - The "3D Volume" Trick)
+          // This creates a glow on the steep edges, making it look like a thick liquid bubble.
+          float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+
+          // Color Ramp
           float crustNoise = fbm(uv * 10.0 + time * 0.2);
           float noisyHeat = heat - (crustNoise * 0.15); 
 
-          vec3 rock = vec3(0.05, 0.0, 0.0);       // Black/Dark Red Rock
-          vec3 magma = vec3(0.8, 0.1, 0.0);       // Deep Red
-          vec3 lava = vec3(1.0, 0.4, 0.0);        // Orange
-          vec3 bright = vec3(1.0, 0.9, 0.5);      // Yellow/White Hot
+          vec3 rock = vec3(0.02, 0.0, 0.0);       
+          vec3 magma = vec3(0.8, 0.1, 0.0);       
+          vec3 lava = vec3(1.0, 0.4, 0.0);        
+          vec3 bright = vec3(1.0, 0.9, 0.5);      
 
           vec3 col;
           if (noisyHeat < 0.15) {
@@ -172,11 +179,15 @@ export default function FlameCanvas() {
               col = mix(lava, bright, (noisyHeat - 0.4) / 0.6);
           }
 
-          // Apply Lighting
-          col += spec * 0.8; // Add white shiny reflection
-          col *= (0.8 + diff * 0.2); // Apply shadows based on height
+          // Composite Lighting
+          // Add specular white
+          col += vec3(1.0, 0.9, 0.8) * spec * 0.6; 
+          // Add Fresnel Rim (Orange/Red Glow)
+          col += vec3(1.0, 0.3, 0.0) * fresnel * 0.8; 
+          // Apply Shadows
+          col *= (0.6 + diff * 0.4);
 
-          gl_FragColor = vec4(col, 1.0);
+          gl_FragColor = vec4(col, alpha);
         }
       `,
       transparent: true,
@@ -191,7 +202,7 @@ export default function FlameCanvas() {
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
         intensity: 3.0,
-        luminanceThreshold: 0.1, // Only glow the hot parts
+        luminanceThreshold: 0.1, 
         radius: 0.9
     })));
 
@@ -223,7 +234,7 @@ export default function FlameCanvas() {
 
     animate(0);
 
-    // --- INPUT HANDLING (Same as before) ---
+    // --- INPUT HANDLING ---
     function onResize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
